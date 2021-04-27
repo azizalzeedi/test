@@ -1,0 +1,95 @@
+image: node:10.15.1
+
+stages:
+  - build
+  - deploy
+
+cache:
+  paths:
+    - node_modules/
+
+before_script:
+  - apt-get update -y
+  - 'which ssh-agent || ( apt-get install openssh-client -y )'
+  - eval $(ssh-agent -s)
+  - mkdir -p ~/.ssh
+  - chmod 700 ~/.ssh
+  - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add - > /dev/null
+  - '[[ -f /.dockerenv ]] && echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config'
+
+build:
+  stage: build
+  script:
+    - echo NODE_ENV $NODE_ENV
+    - echo Installing source NPM dependencies...
+    - npm install
+    - echo Running webpack
+    - npm run webpack
+    - echo Running build script
+    - npm run build
+  artifacts:
+    expire_in: 1 week
+    paths:
+      - scripts/
+      - build/
+      - ecosystem.config.js
+      - package.json
+      - codedeploy/print_env.sh
+
+.deploy:
+  stage: deploy
+  script:
+    - echo 'Writing .env file'
+    - ls -la
+    - ./codedeploy/print_env.sh > .env
+    - ./codedeploy/print_env.sh > build/.env
+    - 'which rsync || ( apt-get install rsync -y)'
+    - echo "Start deploying $CI_COMMIT_REF_NAME"
+    - echo "Deploy to $APP_DIR_PATH"
+    - rsync -q -rav --exclude ./node_modules ./ $SSH_SERVER_IP:$APP_DIR_PATH
+    - echo "cd $APP_DIR_PATH && npm i" | ssh $SSH_SERVER_IP
+    - $RELOAD_APP && (echo "cd $APP_DIR_PATH && pm2 restart ecosystem.config.js --only web --update-env --env production" | ssh $SSH_SERVER_IP)
+
+deploy binance dev:
+  extends: .deploy
+  only:
+    refs:
+      - binance-dev
+  environment:
+    name: binance/dev
+  variables:
+    SSH_SERVER_IP: $BINANCE_SERVER_SSH_IP
+    APP_DIR_PATH: $BINANCE_SERVER_DIR
+
+deploy binance prod:
+  extends: .deploy
+  only:
+    refs:
+      - master
+  environment:
+    name: binance/production
+  variables:
+    SSH_SERVER_IP: $BINANCE_PROD_SERVER_SSH_IP
+    APP_DIR_PATH: $BINANCE_PROD_SERVER_DIR
+
+deploy futures prod:
+  extends: .deploy
+  only:
+    refs:
+      - futures
+  environment:
+    name: futures/production
+  variables:
+    SSH_SERVER_IP: $FUTURES_PROD_SERVER_SSH_IP
+    APP_DIR_PATH: $FUTURES_PROD_SERVER_DIR
+
+deploy futures dev:
+  extends: .deploy
+  only:
+    refs:
+      - futures-dev
+  environment:
+    name: futures/dev
+  variables:
+    SSH_SERVER_IP: $FUTURES_DEV_SERVER_SSH_IP
+    APP_DIR_PATH: $FUTURES_DEV_SERVER_DIR
